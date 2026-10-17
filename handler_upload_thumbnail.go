@@ -3,7 +3,11 @@ package main
 import (
 	"fmt"
 	"io"
+	"mime"
 	"net/http"
+	"os"
+	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/bootdotdev/learn-file-storage-s3-golang-starter/internal/auth"
@@ -44,25 +48,38 @@ func (cfg *apiConfig) handlerUploadThumbnail(w http.ResponseWriter, r *http.Requ
 		respondWithError(w, http.StatusBadRequest, "Could't parse request", err)
 		return
 	}
-	mediaType := fileHeader.Header.Get("Content-Type")
-	data, err := io.ReadAll(file)
+	mediaType, _, err := mime.ParseMediaType(fileHeader.Header.Get("Content-Type"))
 	if err != nil {
-		respondWithError(w, http.StatusBadRequest, "Could't read file", err)
+		respondWithError(w, http.StatusInternalServerError, "Internal error", err)
 		return
 	}
+	if mediaType != "image/png" && mediaType != "image/jpeg" {
+		respondWithError(w, http.StatusBadRequest, "Bad media type", err)
+		return
+	}
+
 	video, err := cfg.db.GetVideo(videoID)
 	if err != nil || video.UserID != userID {
 		respondWithError(w, http.StatusUnauthorized, "Unauthorized access", err)
 		return
 	}
-	videoThumbnails[video.ID] = thumbnail{
-		data:      data,
-		mediaType: mediaType,
+
+	fileExtenstion := strings.Split(mediaType, "/")[1]
+	filepath, err := os.Create(filepath.Join(cfg.assetsRoot, videoIDString+"."+fileExtenstion))
+	if err != nil {
+		respondWithError(w, http.StatusInternalServerError, "Couldn't create file", err)
+		return
 	}
 
+	_, err = io.Copy(filepath, file)
+	if err != nil || video.UserID != userID {
+		respondWithError(w, http.StatusInternalServerError, "Couldn't cop file content", err)
+		return
+	}
+
+	dataURL := fmt.Sprintf("http://localhost:%s/assets/%s.%s", cfg.port, videoIDString, fileExtenstion)
 	video.UpdatedAt = time.Now()
-	thumbnailURL := "http://localhost:8091/api/thumbnails/" + video.ID.String()
-	video.ThumbnailURL = &thumbnailURL
+	video.ThumbnailURL = &dataURL
 
 	err = cfg.db.UpdateVideo(video)
 
