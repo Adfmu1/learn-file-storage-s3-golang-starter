@@ -96,13 +96,37 @@ func (cfg *apiConfig) handlerUploadVideo(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
+	// Get the video's aspect ratio from the temporary file
+	aspectRatio, err := getVideoAspectRatio(tempFile.Name())
+	if err != nil {
+		respondWithError(w, http.StatusInternalServerError, "Couldn't determine video aspect ratio", err)
+		return
+	}
+
+	// Set the key prefix based on the aspect ratio
+	var prefix string
+	switch aspectRatio {
+	case "16:9":
+		prefix = "landscape"
+	case "9:16":
+		prefix = "portrait"
+	default:
+		prefix = "other"
+	}
+
 	// Random 32-byte hex key, e.g. 1a2b3c...ef.mp4
 	keyBytes := make([]byte, 32)
 	if _, err := rand.Read(keyBytes); err != nil {
 		respondWithError(w, http.StatusInternalServerError, "Couldn't generate file key", err)
 		return
 	}
-	key := hex.EncodeToString(keyBytes) + ".mp4"
+	key := prefix + "/" + hex.EncodeToString(keyBytes) + ".mp4"
+
+	// Rewind so S3 can read the file from the start
+	if _, err := tempFile.Seek(0, io.SeekStart); err != nil {
+		respondWithError(w, http.StatusInternalServerError, "Couldn't reset file pointer", err)
+		return
+	}
 
 	// Upload to S3
 	_, err = cfg.s3Client.PutObject(r.Context(), &s3.PutObjectInput{
