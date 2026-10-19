@@ -90,14 +90,16 @@ func (cfg *apiConfig) handlerUploadVideo(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	// Rewind so S3 can read the file from the start
-	if _, err := tempFile.Seek(0, io.SeekStart); err != nil {
-		respondWithError(w, http.StatusInternalServerError, "Couldn't reset file pointer", err)
+	// Rewrite the video with the moov atom at the front so it can be streamed
+	processedPath, err := processVideoForFastStart(tempFile.Name())
+	if err != nil {
+		respondWithError(w, http.StatusInternalServerError, "Couldn't process video", err)
 		return
 	}
+	defer os.Remove(processedPath)
 
-	// Get the video's aspect ratio from the temporary file
-	aspectRatio, err := getVideoAspectRatio(tempFile.Name())
+	// Get the video's aspect ratio from the processed file
+	aspectRatio, err := getVideoAspectRatio(processedPath)
 	if err != nil {
 		respondWithError(w, http.StatusInternalServerError, "Couldn't determine video aspect ratio", err)
 		return
@@ -122,17 +124,19 @@ func (cfg *apiConfig) handlerUploadVideo(w http.ResponseWriter, r *http.Request)
 	}
 	key := prefix + "/" + hex.EncodeToString(keyBytes) + ".mp4"
 
-	// Rewind so S3 can read the file from the start
-	if _, err := tempFile.Seek(0, io.SeekStart); err != nil {
-		respondWithError(w, http.StatusInternalServerError, "Couldn't reset file pointer", err)
+	// Open the processed file for upload
+	processedFile, err := os.Open(processedPath)
+	if err != nil {
+		respondWithError(w, http.StatusInternalServerError, "Couldn't open processed video", err)
 		return
 	}
+	defer processedFile.Close()
 
-	// Upload to S3
+	// Upload the processed video to S3
 	_, err = cfg.s3Client.PutObject(r.Context(), &s3.PutObjectInput{
 		Bucket:      aws.String(cfg.s3Bucket),
 		Key:         aws.String(key),
-		Body:        tempFile,
+		Body:        processedFile,
 		ContentType: aws.String(mediaType),
 	})
 	if err != nil {
